@@ -517,6 +517,7 @@
 
     // --- Camera Fly-to Animation ---
     let flyAnimation = null;
+    let activeRoomHighlight = null;
 
     function flyToBuilding(building) {
       ensureFootprint(building);
@@ -683,6 +684,54 @@
 
     function openPanel(building, highlightRoom = null) {
       selectedBuilding = building;
+      if (activeRoomHighlight) {
+        activeRoomHighlight.traverse(child => {
+          if (child.geometry) child.geometry.dispose();
+          if (child.material) child.material.dispose();
+        });
+        scene.remove(activeRoomHighlight);
+        activeRoomHighlight = null;
+      }
+
+      if (highlightRoom && highlightRoom.footprint && highlightRoom.footprint.length >= 3) {
+        const shape = new THREE.Shape();
+        shape.moveTo(highlightRoom.footprint[0][0], -highlightRoom.footprint[0][1]);
+        for (let i = 1; i < highlightRoom.footprint.length; i++) {
+          shape.lineTo(highlightRoom.footprint[i][0], -highlightRoom.footprint[i][1]);
+        }
+        shape.closePath();
+
+        const roomHeight = building.levelHeight || 3.2;
+        const floorIndex = (highlightRoom.floor || 1) - 1;
+
+        const geo = new THREE.ExtrudeGeometry(shape, { depth: roomHeight, bevelEnabled: false });
+        geo.rotateX(-Math.PI / 2); // Lay flat, extrudes up along +Y
+        
+        activeRoomHighlight = new THREE.Group();
+        
+        // Transparent 3D fill
+        const mat = new THREE.MeshBasicMaterial({ 
+          color: 0xffffff, 
+          transparent: true, 
+          opacity: 0.35, 
+          side: THREE.DoubleSide,
+          depthTest: false
+        });
+        const mesh = new THREE.Mesh(geo, mat);
+        activeRoomHighlight.add(mesh);
+
+        // Solid white edges for visibility
+        const edgesGeo = new THREE.EdgesGeometry(geo);
+        const edgesMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 });
+        const edges = new THREE.LineSegments(edgesGeo, edgesMat);
+        activeRoomHighlight.add(edges);
+
+        // Position at correct floor elevation
+        activeRoomHighlight.position.set(building.x, floorIndex * roomHeight + 0.05, building.z);
+        activeRoomHighlight.rotation.y = THREE.MathUtils.degToRad(building.rotation || 0);
+        activeRoomHighlight.renderOrder = 999;
+        scene.add(activeRoomHighlight);
+      }
       const rooms = building.rooms || [];
 
       let html = `
@@ -725,6 +774,14 @@
     }
 
     function closePanel() {
+      if (activeRoomHighlight) {
+        activeRoomHighlight.traverse(child => {
+          if (child.geometry) child.geometry.dispose();
+          if (child.material) child.material.dispose();
+        });
+        scene.remove(activeRoomHighlight);
+        activeRoomHighlight = null;
+      }
       selectedBuilding = null;
       sidePanel.classList.remove('open');
       panelContent.innerHTML = '<div class="empty-state">Click a building to view rooms</div>';
@@ -848,6 +905,16 @@
         } catch (e) {
           console.warn('Could not fetch campus.json, using embedded data:', e.message);
         }
+      }
+
+      if (CAMPUS_DATA && CAMPUS_DATA.buildings) {
+        CAMPUS_DATA.buildings.forEach(b => {
+          const bLevels = b.levels || 1;
+          (b.rooms || []).forEach(r => {
+            if (r.floor === undefined || r.floor < 1) r.floor = 1;
+            if (r.floor > bLevels) r.floor = bLevels;
+          });
+        });
       }
 
       rebuildCampus(CAMPUS_DATA);
@@ -1346,9 +1413,17 @@
           floorLbl.textContent = 'Floor ';
           const floorIn = document.createElement('input');
           floorIn.type = 'number'; floorIn.value = room.floor !== undefined ? room.floor : 1; floorIn.min = 1; floorIn.step = 1;
+          floorIn.max = building.levels || 1;
           floorIn.style.cssText = 'background:rgba(0,20,30,0.9);border:1px solid #00ffff44;border-radius:4px;color:#00ffff;padding:2px 6px;font-family:monospace;font-size:11px;outline:none;width:50px;';
           floorIn.addEventListener('change', () => {
-            room.floor = parseInt(floorIn.value) || 1;
+            const maxLevels = building.levels || 1;
+            let newFloor = parseInt(floorIn.value) || 1;
+            if (newFloor < 1) newFloor = 1;
+            if (newFloor > maxLevels) newFloor = maxLevels;
+            
+            room.floor = newFloor;
+            floorIn.value = newFloor;
+            
             autosaveDraft();
             if (splitMode) { generateGrid(); updateSplitVisuals(); renderRoomList(building); }
           });

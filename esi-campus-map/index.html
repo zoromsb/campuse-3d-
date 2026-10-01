@@ -84,6 +84,22 @@
     .edit-form .info { font-family: monospace; font-size: 11px; color: #00ffff66; }
     .edit-hint { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 200; background: rgba(0,20,30,0.9); border: 1px solid #00ffff44; border-radius: 5px; padding: 6px 14px; font-family: monospace; font-size: 12px; color: #00ffff; pointer-events: none; display: none; }
     .edit-hint.visible { display: block; }
+    /* Split mode */
+    .split-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 150; pointer-events: none; display: none; }
+    .split-overlay.visible { display: block; }
+    .split-toolbar { position: fixed; top: 20px; right: 24px; z-index: 210; display: none; flex-direction: column; gap: 8px; background: rgba(0,15,25,0.95); border: 1px solid #00ffff33; border-radius: 6px; padding: 12px 14px; min-width: 220px; box-shadow: 0 8px 32px rgba(0,0,0,0.8); }
+    .split-toolbar.visible { display: flex; }
+    .split-toolbar label { font-family: monospace; font-size: 11px; color: #00ffff99; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .split-toolbar input[type=number], .split-toolbar input[type=text], .split-toolbar select { background: rgba(0,20,30,0.9); border: 1px solid #00ffff44; border-radius: 4px; color: #00ffff; padding: 4px 6px; font-family: monospace; font-size: 11px; outline: none; width: 90px; }
+    .split-toolbar .split-btn-row { display: flex; gap: 6px; }
+    .split-toolbar .split-btn-row .edit-btn { flex: 1; text-align: center; }
+    .room-list { max-height: 180px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+    .room-entry { background: rgba(0,255,255,0.05); border: 1px solid #00ffff22; border-radius: 4px; padding: 6px 8px; display: flex; flex-direction: column; gap: 3px; position: relative; }
+    .room-entry label { font-size: 10px; }
+    .room-entry input { width: 80px; }
+    .room-entry select { background: rgba(0,20,30,0.9); border: 1px solid #00ffff44; border-radius: 4px; color: #00ffff; padding: 2px 6px; font-family: monospace; font-size: 11px; outline: none; }
+    .room-entry .room-del-btn { background: rgba(255,50,50,0.15); border: 1px solid #ff444455; color: #ff6666; border-radius: 3px; padding: 2px 6px; font-size: 10px; cursor: pointer; align-self: flex-end; margin-top: 2px; }
+    .room-entry .room-del-btn:hover { background: rgba(255,50,50,0.3); border-color: #ff6666; }
   </style>
 </head>
 <body>
@@ -138,9 +154,12 @@
     <div id="editBuildingForm">
       <label>ID <input type="text" id="editId"></label>
       <label>Name <input type="text" id="editName"></label>
-      <label>Height <input type="number" id="editHeight" min="1" step="1"></label>
+      <label>Levels <input type="number" id="editLevels" min="1" step="1"></label>
+      <label>Level height <input type="number" id="editLevelHeight" min="0.5" step="0.1"></label>
       <label>Rotation <input type="number" id="editRotation" step="1"></label>
       <div class="info" id="editFpInfo"></div>
+      <button id="splitRoomsBtn" class="edit-btn" style="margin-top:4px">✂️ Split Rooms</button>
+      <div class="room-list" id="editRoomList"></div>
     </div>
     <div id="editRoadForm" style="display:none">
       <label>ID <input type="text" id="editRoadId"></label>
@@ -149,6 +168,17 @@
     </div>
   </div>
   <div id="editHint" class="edit-hint"></div>
+  <div id="splitOverlay" class="split-overlay"></div>
+  <div id="splitToolbar" class="split-toolbar">
+    <label>Level <select id="splitLevelSelect"></select></label>
+    <label>Grid size <input type="number" id="splitGridSize" value="2" min="0.5" step="0.5"></label>
+    <button id="splitRegenBtn" class="edit-btn">🔄 Regenerate grid</button>
+    <button id="splitCreateRoomBtn" class="edit-btn" style="border-color:#00ffff;background:rgba(0,255,255,0.15)">➕ Create Room</button>
+    <div class="split-btn-row">
+      <button id="splitUndoBtn" class="edit-btn">↩ Undo</button>
+      <button id="splitDoneBtn" class="edit-btn">✅ Done</button>
+    </div>
+  </div>
   <input type="file" id="importFile" accept=".json" style="display:none">
 
   <script type="importmap">
@@ -262,7 +292,24 @@
         delete b.width; delete b.depth;
       }
       if (b.rotation === undefined) b.rotation = 0;
+      if (b.levels === undefined && b.levelHeight === undefined) {
+        if (b.height !== undefined) {
+          b.levels = 1;
+          b.levelHeight = Number(b.height) || 8;
+        } else {
+          b.levels = 1;
+          b.levelHeight = 3.2;
+        }
+      } else {
+        if (b.levels === undefined) b.levels = 1;
+        if (b.levelHeight === undefined) b.levelHeight = 3.2;
+      }
       return b;
+    }
+
+    function getBuildingHeight(b) {
+      ensureFootprint(b);
+      return (Number(b.levels) || 1) * (Number(b.levelHeight) || 3.2);
     }
 
     function polygonCentroid(fp) {
@@ -481,9 +528,10 @@
       const cz = building.z + sinR * c[0] + cosR * c[1];
       const bounds = footprintBounds(fp);
 
-      const targetPos = new THREE.Vector3(cx, building.height / 2, cz);
+      const bHeight = getBuildingHeight(building);
+      const targetPos = new THREE.Vector3(cx, bHeight / 2, cz);
       const span = Math.max(bounds.w, bounds.d, 10);
-      const offset = new THREE.Vector3(span * 0.8, building.height * 0.6, span * 0.8);
+      const offset = new THREE.Vector3(span * 0.8, bHeight * 0.6, span * 0.8);
       const endPos = targetPos.clone().add(offset);
 
       flyAnimation = {
@@ -514,7 +562,8 @@
     // --- Building Creation (extruded polygon footprint) ---
     function createBuildingMesh(building) {
       ensureFootprint(building);
-      const { height, footprint, rotation } = building;
+      const height = getBuildingHeight(building);
+      const { footprint, rotation } = building;
       const group = new THREE.Group();
       group.userData = { building, isBuilding: true };
 
@@ -640,7 +689,7 @@
         <div class="building-info">
           <div class="building-name">${building.name.toUpperCase()}</div>
           <div class="building-meta">
-            ID: ${building.id} • ${(building.footprint||[]).length} vertices • h=${building.height}m • ${rooms.length} room${rooms.length !== 1 ? 's' : ''}
+            ID: ${building.id} • ${(building.footprint||[]).length} vertices • h=${getBuildingHeight(building).toFixed(1)}m (${building.levels || 1} lvl) • ${rooms.length} room${rooms.length !== 1 ? 's' : ''}
           </div>
         </div>
         <div class="rooms-list">
@@ -819,7 +868,7 @@
             bounds.minZ = Math.min(bounds.minZ, wz);
             bounds.maxZ = Math.max(bounds.maxZ, wz);
           }
-          bounds.maxHeight = Math.max(bounds.maxHeight, b.height);
+          bounds.maxHeight = Math.max(bounds.maxHeight, getBuildingHeight(b));
         });
 
         const centerX = (bounds.minX + bounds.maxX) / 2;
@@ -849,6 +898,180 @@
     let editorDrag = null;     // { type: 'move'|'vertex'|'rotate', startWorld, ... }
     let savedCameraState = null;
     const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+
+    // --- Grid-Select Room Tool State ---
+    let splitMode = false;
+    let splitBuilding = null;       // building data being edited
+    let splitCurrentLevel = 1;      // currently selected floor (1..levels)
+    let splitGridCells = [];        // array of { id, minX, maxX, minZ, maxZ, polygon, isLocked, isSelected }
+    let splitSelectedCells = new Set(); // set of cell ids
+    let splitHistory = [];          // undo stack: snapshots of building.rooms
+    let splitVisualMeshes = [];     // Three.js meshes/lines for grid and rooms
+    let splitSavedCamera = null;    // camera state before split mode
+    let splitIsPointerDown = false;
+    let splitDragSelectMode = true; // true = selecting, false = deselecting
+
+    // --- Geometry Helpers for Grid Clipping & Union ---
+    function polygonArea(poly) {
+      if (!poly || poly.length < 3) return 0;
+      let area = 0;
+      for (let i = 0; i < poly.length; i++) {
+        const j = (i + 1) % poly.length;
+        area += poly[i][0] * poly[j][1] - poly[j][0] * poly[i][1];
+      }
+      return Math.abs(area) / 2;
+    }
+
+    function pointInPolygon(pt, poly) {
+      let inside = false;
+      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const xi = poly[i][0], zi = poly[i][1];
+        const xj = poly[j][0], zj = poly[j][1];
+        const intersect = ((zi > pt[1]) !== (zj > pt[1])) &&
+          (pt[0] < (xj - xi) * (pt[1] - zi) / (zj - zi + 1e-12) + xi);
+        if (intersect) inside = !inside;
+      }
+      return inside;
+    }
+
+    // Sutherland-Hodgman polygon clipping against an infinite directed line (ax, ay)->(bx, by)
+    // Points to the left of the line (or counter-clockwise) are kept.
+    function clipPolygonByLine(poly, a, b) {
+      const out = [];
+      if (!poly || poly.length === 0) return out;
+      const isInside = (p) => (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]) >= -1e-9;
+      const lineIntersect = (p1, p2) => {
+        const d1x = p2[0] - p1[0], d1z = p2[1] - p1[1];
+        const d2x = b[0] - a[0],  d2z = b[1] - a[1];
+        const denom = d1x * d2z - d1z * d2x;
+        if (Math.abs(denom) < 1e-11) return p1.slice();
+        const t = ((a[0] - p1[0]) * d2z - (a[1] - p1[1]) * d2x) / denom;
+        return [p1[0] + t * d1x, p1[1] + t * d1z];
+      };
+
+      for (let i = 0; i < poly.length; i++) {
+        const curr = poly[i];
+        const prev = poly[(i + poly.length - 1) % poly.length];
+        const currIn = isInside(curr);
+        const prevIn = isInside(prev);
+
+        if (currIn) {
+          if (!prevIn) out.push(lineIntersect(prev, curr));
+          out.push(curr.slice());
+        } else if (prevIn) {
+          out.push(lineIntersect(prev, curr));
+        }
+      }
+      return out;
+    }
+
+    // Clip a convex subject polygon (e.g. rect cell) against an arbitrary polygon (or clip rect against polygon edges)
+    function clipPolygonAgainstBox(poly, minX, maxX, minZ, maxZ) {
+      let res = poly.map(p => p.slice());
+      // Clip against minX (x >= minX): line (minX, maxZ) -> (minX, minZ)
+      res = clipPolygonByLine(res, [minX, maxZ], [minX, minZ]);
+      // Clip against maxZ (z <= maxZ): line (minX, maxZ) -> (maxX, maxZ) ... left side is z <= maxZ
+      res = clipPolygonByLine(res, [maxX, maxZ], [minX, maxZ]);
+      // Clip against maxX (x <= maxX): line (maxX, minZ) -> (maxX, maxZ)
+      res = clipPolygonByLine(res, [maxX, minZ], [maxX, maxZ]);
+      // Clip against minZ (z >= minZ): line (minX, minZ) -> (maxX, minZ)
+      res = clipPolygonByLine(res, [minX, minZ], [maxX, minZ]);
+      return res;
+    }
+
+    // Union a collection of polygons (e.g. adjacent square cells).
+    // Walks boundary edges, dropping internal/coincident opposite-directed edges.
+    function unionCellPolygons(polygons) {
+      if (!polygons || polygons.length === 0) return [];
+      if (polygons.length === 1) return polygons[0].map(p => p.slice());
+
+      // Collect all directed edges
+      const edges = [];
+      const ptKey = (p) => `${Math.round(p[0] * 1000) / 1000},${Math.round(p[1] * 1000) / 1000}`;
+
+      polygons.forEach(poly => {
+        for (let i = 0; i < poly.length; i++) {
+          const p1 = poly[i];
+          const p2 = poly[(i + 1) % poly.length];
+          const k1 = ptKey(p1), k2 = ptKey(p2);
+          if (k1 === k2) continue;
+          edges.push({ p1, p2, k1, k2 });
+        }
+      });
+
+      // Filter out internal shared edges: edges having a reverse counterpart
+      const boundaryEdges = [];
+      for (let i = 0; i < edges.length; i++) {
+        const e1 = edges[i];
+        let hasOpposite = false;
+        for (let j = 0; j < edges.length; j++) {
+          if (i === j) continue;
+          const e2 = edges[j];
+          if (e1.k1 === e2.k2 && e1.k2 === e2.k1) {
+            hasOpposite = true;
+            break;
+          }
+        }
+        if (!hasOpposite) {
+          boundaryEdges.push(e1);
+        }
+      }
+
+      if (boundaryEdges.length === 0) return polygons[0].map(p => p.slice());
+
+      // Stitch boundary edges into closed loops
+      const loops = [];
+      const visited = new Set();
+
+      for (let i = 0; i < boundaryEdges.length; i++) {
+        if (visited.has(i)) continue;
+        const loop = [];
+        let currIndex = i;
+
+        while (currIndex !== -1 && !visited.has(currIndex)) {
+          visited.add(currIndex);
+          const edge = boundaryEdges[currIndex];
+          loop.push(edge.p1.slice());
+          const nextTarget = edge.k2;
+
+          // Find matching next edge
+          let nextIndex = -1;
+          for (let j = 0; j < boundaryEdges.length; j++) {
+            if (!visited.has(j) && boundaryEdges[j].k1 === nextTarget) {
+              nextIndex = j;
+              break;
+            }
+          }
+          currIndex = nextIndex;
+        }
+
+        if (loop.length >= 3) {
+          loops.push(loop);
+        }
+      }
+
+      if (loops.length === 0) return polygons[0].map(p => p.slice());
+      // Return the largest loop by area
+      loops.sort((a, b) => polygonArea(b) - polygonArea(a));
+      return loops[0];
+    }
+
+    // Convert world coords to building local coords
+    function worldToLocal(wx, wz, building) {
+      const rot = -THREE.MathUtils.degToRad(building.rotation || 0);
+      const dx = wx - building.x, dz = wz - building.z;
+      return [Math.cos(rot) * dx - Math.sin(rot) * dz, Math.sin(rot) * dx + Math.cos(rot) * dz];
+    }
+
+    // Convert building local coords to world coords
+    function localToWorld(lx, lz, building) {
+      const rot = THREE.MathUtils.degToRad(building.rotation || 0);
+      return [building.x + Math.cos(rot) * lx - Math.sin(rot) * lz,
+              building.z + Math.sin(rot) * lx + Math.cos(rot) * lz];
+    }
+
+    // Room piece colors (for visual distinction)
+    const ROOM_COLORS = [0x00ffff, 0xff00ff, 0xffff00, 0x00ff88, 0xff8800, 0x88ff00, 0x0088ff, 0xff0088];
 
     function getGroundPoint(mx, my) {
       const ndc = new THREE.Vector2(mx, my);
@@ -1034,10 +1257,12 @@
         editRoadForm.style.display = 'none';
         document.getElementById('editId').value = building.id;
         document.getElementById('editName').value = building.name;
-        document.getElementById('editHeight').value = building.height;
+        document.getElementById('editLevels').value = building.levels || 1;
+        document.getElementById('editLevelHeight').value = building.levelHeight || 3.2;
         document.getElementById('editRotation').value = building.rotation || 0;
         document.getElementById('editFpInfo').textContent = `Footprint: ${building.footprint.length} vertices`;
         editFormDiv.classList.add('visible');
+        renderRoomList(building);
       }
 
       function selectRoad(road) {
@@ -1067,6 +1292,467 @@
         editFormDiv.classList.add('visible');
       }
 
+      // --- Room list rendering in editor form ---
+      const editRoomListEl = document.getElementById('editRoomList');
+      const ROOM_TYPES = ['amphitheater', 'classroom', 'lab', 'office', 'library', 'study', 'gym', 'locker', 'hallway', 'other'];
+
+      function renderRoomList(building) {
+        editRoomListEl.innerHTML = '';
+        if (!building.rooms || building.rooms.length === 0) return;
+        // If in splitMode, show rooms for splitCurrentLevel, otherwise show all rooms
+        const roomsToShow = splitMode
+          ? building.rooms.filter(r => (r.floor !== undefined ? r.floor : 1) === splitCurrentLevel)
+          : building.rooms;
+
+        if (splitMode && roomsToShow.length === 0) {
+          const empty = document.createElement('div');
+          empty.style.cssText = 'color:#00ffff66;font-size:11px;font-style:italic;padding:4px;';
+          empty.textContent = `No rooms on Level ${splitCurrentLevel}`;
+          editRoomListEl.appendChild(empty);
+          return;
+        }
+
+        roomsToShow.forEach((room) => {
+          const ri = building.rooms.indexOf(room);
+          const div = document.createElement('div');
+          div.className = 'room-entry';
+          const color = ROOM_COLORS[ri % ROOM_COLORS.length];
+          div.style.borderLeftColor = '#' + color.toString(16).padStart(6, '0');
+          div.style.borderLeftWidth = '3px';
+
+          const nameLbl = document.createElement('label');
+          nameLbl.textContent = 'Name ';
+          const nameIn = document.createElement('input');
+          nameIn.type = 'text'; nameIn.value = room.name || '';
+          nameIn.style.cssText = 'background:rgba(0,20,30,0.9);border:1px solid #00ffff44;border-radius:4px;color:#00ffff;padding:2px 6px;font-family:monospace;font-size:11px;outline:none;';
+          nameIn.addEventListener('change', () => { room.name = nameIn.value; autosaveDraft(); });
+          nameLbl.appendChild(nameIn);
+          div.appendChild(nameLbl);
+
+          const typeLbl = document.createElement('label');
+          typeLbl.textContent = 'Type ';
+          const typeSel = document.createElement('select');
+          ROOM_TYPES.forEach(t => {
+            const opt = document.createElement('option');
+            opt.value = t; opt.textContent = t;
+            if (room.type === t) opt.selected = true;
+            typeSel.appendChild(opt);
+          });
+          typeSel.addEventListener('change', () => { room.type = typeSel.value; autosaveDraft(); });
+          typeLbl.appendChild(typeSel);
+          div.appendChild(typeLbl);
+
+          const floorLbl = document.createElement('label');
+          floorLbl.textContent = 'Floor ';
+          const floorIn = document.createElement('input');
+          floorIn.type = 'number'; floorIn.value = room.floor !== undefined ? room.floor : 1; floorIn.min = 1; floorIn.step = 1;
+          floorIn.style.cssText = 'background:rgba(0,20,30,0.9);border:1px solid #00ffff44;border-radius:4px;color:#00ffff;padding:2px 6px;font-family:monospace;font-size:11px;outline:none;width:50px;';
+          floorIn.addEventListener('change', () => {
+            room.floor = parseInt(floorIn.value) || 1;
+            autosaveDraft();
+            if (splitMode) { generateGrid(); updateSplitVisuals(); renderRoomList(building); }
+          });
+          floorLbl.appendChild(floorIn);
+          div.appendChild(floorLbl);
+
+          // Delete Room button
+          const delBtn = document.createElement('button');
+          delBtn.className = 'room-del-btn';
+          delBtn.textContent = '🗑 Delete Room';
+          delBtn.addEventListener('click', () => {
+            if (splitMode) {
+              splitHistory.push(JSON.parse(JSON.stringify(building.rooms)));
+            }
+            const idx = building.rooms.indexOf(room);
+            if (idx >= 0) building.rooms.splice(idx, 1);
+            autosaveDraft();
+            if (splitMode) {
+              generateGrid();
+              updateSplitVisuals();
+              renderRoomList(building);
+              showHint(`Deleted room "${room.name}". Cells unlocked.`);
+            } else {
+              rebuildCampus(CAMPUS_DATA);
+              selectBuilding(building);
+            }
+          });
+          div.appendChild(delBtn);
+
+          editRoomListEl.appendChild(div);
+        });
+      }
+
+      // --- Grid-Select Room Tool Functions ---
+      const splitOverlay = document.getElementById('splitOverlay');
+      const splitToolbar = document.getElementById('splitToolbar');
+      const splitLevelSelect = document.getElementById('splitLevelSelect');
+      const splitGridSizeInput = document.getElementById('splitGridSize');
+      const splitRegenBtn = document.getElementById('splitRegenBtn');
+      const splitCreateRoomBtn = document.getElementById('splitCreateRoomBtn');
+      const splitUndoBtn = document.getElementById('splitUndoBtn');
+      const splitDoneBtn = document.getElementById('splitDoneBtn');
+
+      function clearSplitVisuals() {
+        splitVisualMeshes.forEach(m => {
+          scene.remove(m);
+          if (m.geometry) m.geometry.dispose();
+          if (m.material) m.material.dispose();
+        });
+        splitVisualMeshes = [];
+      }
+
+      function generateGrid() {
+        if (!splitBuilding) return;
+        ensureFootprint(splitBuilding);
+        const fp = splitBuilding.footprint;
+        const bounds = footprintBounds(fp);
+        const cellSize = Math.max(0.5, parseFloat(splitGridSizeInput.value) || 2);
+
+        splitGridCells = [];
+        splitSelectedCells.clear();
+
+        // Existing rooms on the selected level
+        const currentLevelRooms = (splitBuilding.rooms || []).filter(r =>
+          (r.floor !== undefined ? r.floor : 1) === splitCurrentLevel && r.footprint && r.footprint.length >= 3
+        );
+
+        let cellId = 0;
+        for (let x = bounds.minX; x < bounds.maxX; x += cellSize) {
+          for (let z = bounds.minZ; z < bounds.maxZ; z += cellSize) {
+            const minX = x, maxX = Math.min(x + cellSize, bounds.maxX);
+            const minZ = z, maxZ = Math.min(z + cellSize, bounds.maxZ);
+
+            // Create initial cell polygon
+            const cellBox = [[minX, minZ], [maxX, minZ], [maxX, maxZ], [minX, maxZ]];
+            // Clip cellBox against building footprint
+            const clippedPoly = clipPolygonAgainstBox(fp, minX, maxX, minZ, maxZ);
+
+            if (clippedPoly.length >= 3) {
+              const area = polygonArea(clippedPoly);
+              if (area >= 0.1) {
+                // Check if this cell is inside any room on the selected level
+                const center = [(minX + maxX) / 2, (minZ + maxZ) / 2];
+                let isLocked = false;
+                for (const rm of currentLevelRooms) {
+                  if (pointInPolygon(center, rm.footprint)) {
+                    isLocked = true;
+                    break;
+                  }
+                }
+
+                splitGridCells.push({
+                  id: cellId++,
+                  minX, maxX, minZ, maxZ,
+                  polygon: clippedPoly,
+                  isLocked: isLocked
+                });
+              }
+            }
+          }
+        }
+      }
+
+      function updateSplitVisuals() {
+        clearSplitVisuals();
+        if (!splitBuilding) return;
+        const b = splitBuilding;
+        const rot = THREE.MathUtils.degToRad(b.rotation || 0);
+
+        // 1. Render all existing rooms on this level with distinct colors
+        const levelRooms = (b.rooms || []).filter(r => (r.floor !== undefined ? r.floor : 1) === splitCurrentLevel);
+        levelRooms.forEach((room, ri) => {
+          if (!room.footprint || room.footprint.length < 3) return;
+          const shape = new THREE.Shape();
+          shape.moveTo(room.footprint[0][0], -room.footprint[0][1]);
+          for (let i = 1; i < room.footprint.length; i++) shape.lineTo(room.footprint[i][0], -room.footprint[i][1]);
+          shape.closePath();
+
+          const geo = new THREE.ShapeGeometry(shape);
+          geo.rotateX(-Math.PI / 2);
+          const color = ROOM_COLORS[ri % ROOM_COLORS.length];
+          const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.35, side: THREE.DoubleSide, depthWrite: false });
+          const mesh = new THREE.Mesh(geo, mat);
+          mesh.position.set(b.x, 0.16, b.z);
+          mesh.rotation.y = rot;
+          mesh.renderOrder = 996;
+          scene.add(mesh);
+          splitVisualMeshes.push(mesh);
+        });
+
+        // 2. Render grid cells
+        splitGridCells.forEach(cell => {
+          const isSelected = splitSelectedCells.has(cell.id);
+          const poly = cell.polygon;
+          if (!poly || poly.length < 3) return;
+
+          // Wireframe outline
+          const edgePts = [];
+          poly.forEach(p => edgePts.push(p[0], 0, -p[1]));
+          edgePts.push(poly[0][0], 0, -poly[0][1]); // close loop
+          const lineGeo = new THREE.BufferGeometry();
+          lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(edgePts, 3));
+
+          let lineColor = 0x00ffff;
+          let lineOpacity = 0.3;
+          if (cell.isLocked) {
+            lineColor = 0x555555;
+            lineOpacity = 0.2;
+          } else if (isSelected) {
+            lineColor = 0xffff00;
+            lineOpacity = 0.9;
+          }
+
+          const lineMat = new THREE.LineBasicMaterial({ color: lineColor, transparent: true, opacity: lineOpacity, depthTest: false });
+          const line = new THREE.Line(lineGeo, lineMat);
+          line.position.set(b.x, 0.18, b.z);
+          line.rotation.y = rot;
+          line.renderOrder = 998;
+          scene.add(line);
+          splitVisualMeshes.push(line);
+
+          // Fill for cell
+          let fillColor = null;
+          let fillOpacity = 0;
+          if (cell.isLocked) {
+            fillColor = 0x334444;
+            fillOpacity = 0.15;
+          } else if (isSelected) {
+            fillColor = 0xffff00;
+            fillOpacity = 0.45;
+          }
+
+          if (fillColor !== null) {
+            const shape = new THREE.Shape();
+            shape.moveTo(poly[0][0], -poly[0][1]);
+            for (let i = 1; i < poly.length; i++) shape.lineTo(poly[i][0], -poly[i][1]);
+            shape.closePath();
+
+            const geo = new THREE.ShapeGeometry(shape);
+            geo.rotateX(-Math.PI / 2);
+            const mat = new THREE.MeshBasicMaterial({ color: fillColor, transparent: true, opacity: fillOpacity, side: THREE.DoubleSide, depthWrite: false });
+            const fill = new THREE.Mesh(geo, mat);
+            fill.position.set(b.x, 0.17, b.z);
+            fill.rotation.y = rot;
+            fill.renderOrder = 997;
+            scene.add(fill);
+            splitVisualMeshes.push(fill);
+          }
+        });
+      }
+
+      function enterSplitMode(building) {
+        if (splitMode) return;
+        splitMode = true;
+        splitBuilding = building;
+        ensureFootprint(building);
+
+        splitHistory = [];
+        splitSelectedCells.clear();
+
+        // Populate Level dropdown
+        splitLevelSelect.innerHTML = '';
+        const totalLevels = Math.max(1, building.levels || 1);
+        for (let l = 1; l <= totalLevels; l++) {
+          const opt = document.createElement('option');
+          opt.value = l;
+          opt.textContent = `Level ${l}`;
+          splitLevelSelect.appendChild(opt);
+        }
+        splitCurrentLevel = 1;
+        splitLevelSelect.value = 1;
+
+        // Save camera and frame the building
+        splitSavedCamera = { pos: camera.position.clone(), target: controls.target.clone() };
+        const bounds = footprintBounds(building.footprint);
+        const c = polygonCentroid(building.footprint);
+        const rot = THREE.MathUtils.degToRad(building.rotation || 0);
+        const wcx = building.x + Math.cos(rot) * c[0] - Math.sin(rot) * c[1];
+        const wcz = building.z + Math.sin(rot) * c[0] + Math.cos(rot) * c[1];
+        const viewSize = Math.max(bounds.w, bounds.d) + 8;
+        controls.target.set(wcx, 0, wcz);
+        camera.position.set(wcx, viewSize * 1.2, wcz + 0.01);
+        controls.update();
+
+        // Dim background & show split UI
+        splitOverlay.classList.add('visible');
+        splitToolbar.classList.add('visible');
+        editBuildingForm.style.display = 'block';
+        editRoadForm.style.display = 'none';
+        editFormDiv.classList.add('visible');
+        document.getElementById('editToolbar').style.display = 'none';
+
+        // Dim all buildings
+        buildingGroups.forEach(g => {
+          g.traverse(child => {
+            if (child.material && child !== satPlane) {
+              if (!child.userData._origOpacity) child.userData._origOpacity = child.material.opacity;
+              child.material.opacity = child.userData._origOpacity * 0.15;
+            }
+          });
+        });
+
+        generateGrid();
+        updateSplitVisuals();
+        renderRoomList(building);
+        showHint('Click & drag over grid cells to select. Click "Create Room" to merge.');
+      }
+
+      function exitSplitMode() {
+        if (!splitMode) return;
+
+        // Restore building opacities
+        buildingGroups.forEach(g => {
+          g.traverse(child => {
+            if (child.material && child.userData._origOpacity !== undefined) {
+              child.material.opacity = child.userData._origOpacity;
+              delete child.userData._origOpacity;
+            }
+          });
+        });
+
+        clearSplitVisuals();
+        splitOverlay.classList.remove('visible');
+        splitToolbar.classList.remove('visible');
+        document.getElementById('editToolbar').style.display = 'flex';
+
+        if (splitSavedCamera) {
+          camera.position.copy(splitSavedCamera.pos);
+          controls.target.copy(splitSavedCamera.target);
+          controls.update();
+        }
+
+        const b = splitBuilding;
+        splitMode = false;
+        splitBuilding = null;
+        splitGridCells = [];
+        splitSelectedCells.clear();
+        splitHistory = [];
+
+        if (b) {
+          rebuildCampus(CAMPUS_DATA);
+          autosaveDraft();
+          selectBuilding(b);
+        }
+        showHint('');
+      }
+
+      function handleCellToggleAtLocal(lx, lz, forceMode = null) {
+        // Find cell containing (lx, lz)
+        const cell = splitGridCells.find(c => pointInPolygon([lx, lz], c.polygon));
+        if (!cell || cell.isLocked) return null;
+
+        const isCurrentlySelected = splitSelectedCells.has(cell.id);
+        const shouldSelect = forceMode !== null ? forceMode : !isCurrentlySelected;
+
+        if (shouldSelect) {
+          splitSelectedCells.add(cell.id);
+        } else {
+          splitSelectedCells.delete(cell.id);
+        }
+
+        updateSplitVisuals();
+        return shouldSelect;
+      }
+
+      function createRoomFromSelection() {
+        if (splitSelectedCells.size === 0) {
+          showHint('Select at least one cell first.');
+          return;
+        }
+
+        const selectedPolys = [];
+        splitGridCells.forEach(cell => {
+          if (splitSelectedCells.has(cell.id)) {
+            selectedPolys.push(cell.polygon);
+          }
+        });
+
+        const mergedFootprint = unionCellPolygons(selectedPolys);
+        if (!mergedFootprint || mergedFootprint.length < 3) {
+          showHint('Failed to form a valid room polygon from selection.');
+          return;
+        }
+
+        // Prompt for room name & type
+        const totalRooms = (splitBuilding.rooms || []).length + 1;
+        const defaultName = `Room ${totalRooms}`;
+        const name = prompt('Room name:', defaultName) || defaultName;
+        const typeChoice = prompt(`Room type (${ROOM_TYPES.join(', ')}):`, 'classroom') || 'classroom';
+        const type = ROOM_TYPES.includes(typeChoice.toLowerCase()) ? typeChoice.toLowerCase() : 'classroom';
+
+        // Save undo state
+        splitHistory.push(JSON.parse(JSON.stringify(splitBuilding.rooms || [])));
+
+        if (!splitBuilding.rooms) splitBuilding.rooms = [];
+        const newRoom = {
+          id: `${splitBuilding.id}-r${Date.now() % 100000}`,
+          name: name.trim(),
+          type: type,
+          floor: splitCurrentLevel,
+          footprint: mergedFootprint.map(p => [Math.round(p[0] * 100) / 100, Math.round(p[1] * 100) / 100])
+        };
+
+        splitBuilding.rooms.push(newRoom);
+        autosaveDraft();
+
+        splitSelectedCells.clear();
+        generateGrid();
+        updateSplitVisuals();
+        renderRoomList(splitBuilding);
+        showHint(`Created "${newRoom.name}" on Level ${splitCurrentLevel}!`);
+      }
+
+      // Event listener: Level change
+      splitLevelSelect.addEventListener('change', () => {
+        if (splitSelectedCells.size > 0) {
+          alert('Discarding unapplied cell selection for this level.');
+          splitSelectedCells.clear();
+        }
+        splitCurrentLevel = parseInt(splitLevelSelect.value) || 1;
+        generateGrid();
+        updateSplitVisuals();
+        renderRoomList(splitBuilding);
+        showHint(`Viewing Level ${splitCurrentLevel}`);
+      });
+
+      // Event listener: Regenerate grid
+      splitRegenBtn.addEventListener('click', () => {
+        generateGrid();
+        updateSplitVisuals();
+        showHint('Grid regenerated.');
+      });
+
+      // Event listener: Create room
+      splitCreateRoomBtn.addEventListener('click', () => {
+        createRoomFromSelection();
+      });
+
+      // Event listener: Undo
+      splitUndoBtn.addEventListener('click', () => {
+        if (splitHistory.length === 0) {
+          showHint('Nothing to undo.');
+          return;
+        }
+        splitBuilding.rooms = splitHistory.pop();
+        autosaveDraft();
+        splitSelectedCells.clear();
+        generateGrid();
+        updateSplitVisuals();
+        renderRoomList(splitBuilding);
+        showHint('Action undone.');
+      });
+
+      // Event listener: Done
+      splitDoneBtn.addEventListener('click', () => {
+        exitSplitMode();
+      });
+
+      // Wire up split button in building inspector
+      document.getElementById('splitRoomsBtn').addEventListener('click', () => {
+        if (!editorSelected || editorSelected.type !== 'building') return;
+        enterSplitMode(editorSelected.data);
+      });
+
       // --- Form input handlers ---
       ['editId', 'editName'].forEach(id => {
         document.getElementById(id).addEventListener('change', () => {
@@ -1079,9 +1765,16 @@
           selectBuilding(b);
         });
       });
-      document.getElementById('editHeight').addEventListener('change', () => {
+      document.getElementById('editLevels').addEventListener('change', () => {
         if (!editorSelected || editorSelected.type !== 'building') return;
-        editorSelected.data.height = parseFloat(document.getElementById('editHeight').value) || 8;
+        editorSelected.data.levels = Math.max(1, parseInt(document.getElementById('editLevels').value) || 1);
+        rebuildCampus(CAMPUS_DATA);
+        autosaveDraft();
+        selectBuilding(editorSelected.data);
+      });
+      document.getElementById('editLevelHeight').addEventListener('change', () => {
+        if (!editorSelected || editorSelected.type !== 'building') return;
+        editorSelected.data.levelHeight = Math.max(0.5, parseFloat(document.getElementById('editLevelHeight').value) || 3.2);
         rebuildCampus(CAMPUS_DATA);
         autosaveDraft();
         selectBuilding(editorSelected.data);
@@ -1121,6 +1814,18 @@
 
         const gp = getGroundPoint(mx, my);
         if (!gp) return;
+
+        // Split mode: click or drag-select cells
+        if (splitMode && splitBuilding) {
+          splitIsPointerDown = true;
+          controls.enabled = false;
+          const lp = worldToLocal(gp.x, gp.z, splitBuilding);
+          const mode = handleCellToggleAtLocal(lp[0], lp[1]);
+          if (mode !== null) {
+            splitDragSelectMode = mode;
+          }
+          return;
+        }
 
         // Drawing mode
         if (editorDrawMode) {
@@ -1194,6 +1899,18 @@
         const mx = (e.clientX / window.innerWidth) * 2 - 1;
         const my = -(e.clientY / window.innerHeight) * 2 + 1;
 
+        // Split mode drag-selection
+        if (splitMode && splitBuilding) {
+          if (splitIsPointerDown) {
+            const gp = getGroundPoint(mx, my);
+            if (gp) {
+              const lp = worldToLocal(gp.x, gp.z, splitBuilding);
+              handleCellToggleAtLocal(lp[0], lp[1], splitDragSelectMode);
+            }
+          }
+          return;
+        }
+
         // Drawing preview
         if (editorDrawMode && drawPoints.length > 0) {
           const gp = getGroundPoint(mx, my);
@@ -1260,6 +1977,11 @@
 
       renderer.domElement.addEventListener('pointerup', (e) => {
         if (!editActive) return;
+        if (splitMode) {
+          splitIsPointerDown = false;
+          controls.enabled = true;
+          return;
+        }
         if (editorDrag) {
           controls.enabled = true;
           if (editorDrag.type === 'move' && editorDrag.moved) {
@@ -1276,12 +1998,26 @@
       document.addEventListener('keydown', (e) => {
         if (!editActive) return;
         // Don't intercept keyboard when typing in form inputs
-        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
 
         if (e.key === 'Enter') {
+          if (splitMode) {
+            createRoomFromSelection();
+            return;
+          }
           if (editorDrawMode === 'building') finishDrawBuilding();
           else if (editorDrawMode === 'road') finishDrawRoad();
         } else if (e.key === 'Escape') {
+          if (splitMode) {
+            if (splitSelectedCells.size > 0) {
+              splitSelectedCells.clear();
+              updateSplitVisuals();
+              showHint('Cleared cell selection.');
+            } else {
+              exitSplitMode();
+            }
+            return;
+          }
           cancelDraw();
           showHint('Drawing cancelled');
         } else if ((e.key === 'Delete' || e.key === 'Backspace') && editorSelected) {

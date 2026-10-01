@@ -31,10 +31,11 @@ them interactively, and exporting the data as campus.json.
       "id": "string", "name": "string",
       "x": 0, "z": 0,           // footprint anchor in world space
       "rotation": 0,             // degrees, rotates footprint around anchor (Y axis)
-      "height": 8,
+      "levels": 1,              // number of floors / levels (integer)
+      "levelHeight": 3.2,       // height per floor in meters (total height = levels * levelHeight)
       "footprint": [[0,0],[10,0],[10,6],[4,6],[4,14],[0,14]],
                                  // polygon vertices in local 2D (x,z), any simple polygon
-      "rooms": [ { "id": "string", "name": "string", "type": "string", "floor": 0 } ]
+      "rooms": [ { "id": "string", "name": "string", "type": "string", "floor": 0, "footprint": [[0,0],[5,0],[5,5],[0,5]] } ]
     }
   ],
   "roads": [
@@ -44,14 +45,16 @@ them interactively, and exporting the data as campus.json.
 ```
 - x/z = footprint anchor position in world space. y is up.
 - rotation = degrees, rotates the entire footprint around the anchor.
+- levels / levelHeight = total height is levels * levelHeight.
 - footprint = ordered polygon vertices in local 2D space. Can be any simple polygon (rectangle, L-shape, etc.).
-- Backward compat: if a building has `width`/`depth` instead of `footprint`, it auto-converts to `[[-w/2,-d/2],[w/2,-d/2],[w/2,d/2],[-w/2,d/2]]`.
+- Backward compat: if a building has `width`/`depth` instead of `footprint`, it auto-converts to `[[-w/2,-d/2],[w/2,-d/2],[w/2,d/2],[-w/2,d/2]]`. Old `height` without levels/levelHeight converts to `levels: 1, levelHeight: <height>`.
+- rooms[].footprint = (optional) ordered polygon vertices in building's local 2D space, representing the room's physical shape.
 - roads = visual-only polylines rendered as flat ribbons on the ground.
-- Room types in use: amphitheater, classroom, lab, office, library, study, gym, locker.
+- Room types in use: amphitheater, classroom, lab, office, library, study, gym, locker, hallway, other.
 
 ## Key names in index.html
-CAMPUS_DATA, createBuildingMesh(building), createRoadMesh(road), registerBuildingMesh(mesh),
+CAMPUS_DATA, getBuildingHeight(building), createBuildingMesh(building), createRoadMesh(road), registerBuildingMesh(mesh),
 buildingMeshes[], roadMeshes[], polygonCentroid(fp), ensureFootprint(b),
 loadCampus(), performSearch(q), selectSearchResult(r), flyToBuilding(b), openPanel(b, room),
 onClick / onMouseMove (raycasting), animate(), rebuildCampus(data).
-Editor (only with ?edit=1): toggleEditMode(), editorState, autosaveDraft(), exportJSON(), importJSON().
+Editor (only with ?edit=1): toggleEditMode(), enterSplitMode(b), exitSplitMode(), generateGrid(), createRoomFromSelection(), autosaveDraft(), exportJSON(), importJSON().

@@ -165,6 +165,7 @@
       <label>ID <input type="text" id="editRoadId"></label>
       <label>Width <input type="number" id="editRoadWidth" min="1" step="0.5"></label>
       <div class="info" id="editPathInfo"></div>
+      <button id="deleteRoadBtn" class="edit-btn danger" style="margin-top:8px; width:100%">🗑 Delete Road</button>
     </div>
   </div>
   <div id="editHint" class="edit-hint"></div>
@@ -587,6 +588,32 @@
       const edges = new THREE.LineSegments(edgesGeometry, edgeMaterial);
       group.add(edges);
 
+      // Add horizontal level separators
+      const levels = Number(building.levels) || 1;
+      const levelHeight = Number(building.levelHeight) || 3.2;
+      
+      if (levels > 1) {
+        const floorPts = [];
+        for (let i = 0; i < footprint.length; i++) {
+          floorPts.push(footprint[i][0], 0, -footprint[i][1]);
+        }
+        floorPts.push(footprint[0][0], 0, -footprint[0][1]); // close the polygon loop
+        
+        const floorGeo = new THREE.BufferGeometry();
+        floorGeo.setAttribute('position', new THREE.Float32BufferAttribute(floorPts, 3));
+        const floorMat = new THREE.LineBasicMaterial({ 
+          color: 0x00ffff, 
+          transparent: true, 
+          opacity: 0.4 // Slightly dimmer than the main edges
+        });
+        
+        for (let i = 1; i < levels; i++) {
+          const floorLine = new THREE.Line(floorGeo, floorMat);
+          floorLine.position.y = i * levelHeight;
+          group.add(floorLine);
+        }
+      }
+
       const fillMaterial = new THREE.MeshBasicMaterial({
         color: 0x00ffff, transparent: true, opacity: 0.08,
         side: THREE.DoubleSide, depthWrite: false
@@ -635,30 +662,72 @@
       const halfW = (road.width || 6) / 2;
       const path = road.path;
       if (!path || path.length < 2) return null;
-      const verts = [], idx = [];
+
+      const verts = [];
+      const idx = [];
+      let vertexOffset = 0;
+
+      // 1. Draw a perfect circular cap at every path point
       for (let i = 0; i < path.length; i++) {
-        let dx, dz;
-        if (i < path.length - 1) { dx = path[i+1][0] - path[i][0]; dz = path[i+1][1] - path[i][1]; }
-        else { dx = path[i][0] - path[i-1][0]; dz = path[i][1] - path[i-1][1]; }
-        const len = Math.hypot(dx, dz) || 1;
-        const px = -dz / len, pz = dx / len;
-        verts.push(
-          path[i][0] + px * halfW, 0.08, path[i][1] + pz * halfW,
-          path[i][0] - px * halfW, 0.08, path[i][1] - pz * halfW
-        );
+        const cx = path[i][0];
+        const cz = path[i][1];
+        const segments = 16;
+        const centerIdx = vertexOffset;
+        
+        verts.push(cx, 0.08, cz);
+        vertexOffset++;
+
+        for (let s = 0; s < segments; s++) {
+          const theta = (s / segments) * Math.PI * 2;
+          verts.push(cx + Math.cos(theta) * halfW, 0.08, cz + Math.sin(theta) * halfW);
+          vertexOffset++;
+        }
+        for (let s = 0; s < segments; s++) {
+          idx.push(centerIdx, centerIdx + 1 + s, centerIdx + 1 + ((s + 1) % segments));
+        }
       }
+
+      // 2. Draw connecting rectangles between the points
       for (let i = 0; i < path.length - 1; i++) {
-        const a = i*2, b = i*2+1, c = (i+1)*2, d = (i+1)*2+1;
-        idx.push(a, c, b, b, c, d);
+        const p1 = path[i];
+        const p2 = path[i+1];
+        const dx = p2[0] - p1[0];
+        const dz = p2[1] - p1[1];
+        const len = Math.hypot(dx, dz);
+        if (len < 0.01) continue;
+
+        const nx = (-dz / len) * halfW;
+        const nz = (dx / len) * halfW;
+
+        const base = vertexOffset;
+        verts.push(
+          p1[0] + nx, 0.08, p1[1] + nz,
+          p1[0] - nx, 0.08, p1[1] - nz,
+          p2[0] + nx, 0.08, p2[1] + nz,
+          p2[0] - nx, 0.08, p2[1] - nz
+        );
+        vertexOffset += 4;
+
+        idx.push(base, base + 2, base + 1, base + 1, base + 2, base + 3);
       }
+
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
       geo.setIndex(idx);
       geo.computeVertexNormals();
+
+      // Strict depth test ensures overlapping road pixels at the same height are discarded
       const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
-        color: 0x888888, transparent: true, opacity: 0.35,
-        depthWrite: false, side: THREE.DoubleSide
+        color: 0xffff00,
+        transparent: true,
+        opacity: 0.45,
+        depthWrite: true,
+        depthFunc: THREE.LessDepth,
+        side: THREE.DoubleSide
       }));
+      
+      // Render roads early in the transparent queue so they depth-test against each other correctly
+      mesh.renderOrder = 5;
       mesh.userData = { road, isRoad: true };
       return mesh;
     }
@@ -704,7 +773,9 @@
         const roomHeight = building.levelHeight || 3.2;
         const floorIndex = (highlightRoom.floor || 1) - 1;
 
-        const geo = new THREE.ExtrudeGeometry(shape, { depth: roomHeight, bevelEnabled: false });
+        // Shrink the highlight height to 80% of the room height to prevent clipping
+        const highlightDepth = roomHeight * 0.8;
+        const geo = new THREE.ExtrudeGeometry(shape, { depth: highlightDepth, bevelEnabled: false });
         geo.rotateX(-Math.PI / 2); // Lay flat, extrudes up along +Y
         
         activeRoomHighlight = new THREE.Group();
@@ -726,8 +797,9 @@
         const edges = new THREE.LineSegments(edgesGeo, edgesMat);
         activeRoomHighlight.add(edges);
 
-        // Position at correct floor elevation
-        activeRoomHighlight.position.set(building.x, floorIndex * roomHeight + 0.05, building.z);
+        // Center the highlight vertically within the floor (10% gap top and bottom)
+        const yOffset = (floorIndex * roomHeight) + (roomHeight * 0.1);
+        activeRoomHighlight.position.set(building.x, yOffset, building.z);
         activeRoomHighlight.rotation.y = THREE.MathUtils.degToRad(building.rotation || 0);
         activeRoomHighlight.renderOrder = 999;
         scene.add(activeRoomHighlight);
@@ -1873,6 +1945,14 @@
         autosaveDraft();
         selectRoad(editorSelected.data);
       });
+      document.getElementById('deleteRoadBtn').addEventListener('click', () => {
+        if (!editorSelected || editorSelected.type !== 'road') return;
+        CAMPUS_DATA.roads.splice(editorSelected.index, 1);
+        clearEditorSelection();
+        rebuildCampus(CAMPUS_DATA);
+        autosaveDraft();
+        showHint('Road deleted');
+      });
 
       // --- Editor mouse interaction ---
       let lastClickTime = 0;
@@ -1909,6 +1989,7 @@
             else finishDrawRoad();
             return;
           }
+          // Insert a point on every single click
           drawPoints.push([gp.x, gp.z]);
           updateDrawPreview();
           return;
@@ -1989,7 +2070,10 @@
         // Drawing preview
         if (editorDrawMode && drawPoints.length > 0) {
           const gp = getGroundPoint(mx, my);
-          if (gp) updateDrawPreview([gp.x, gp.z]);
+          if (gp) {
+            // Draw a temporary yellow rubber-band line to the current cursor position
+            updateDrawPreview([gp.x, gp.z]);
+          }
           return;
         }
 
